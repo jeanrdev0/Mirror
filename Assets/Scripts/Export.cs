@@ -58,7 +58,7 @@ public class Export : MonoBehaviour
 
             foreach (string exclusion in exclusions)
             {
-                if (path.Contains(exclusion) || path.StartsWith(exclusion))
+                if (path.StartsWith(exclusion))
                 {
                     exclude = true;
                     break;
