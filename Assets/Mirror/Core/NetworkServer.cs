@@ -191,7 +191,10 @@ namespace Mirror
         static void AddTransportHandlers()
         {
             // += so that other systems can also hook into it (i.e. statistics)
+#pragma warning disable CS0618 // Type or member is obsolete
             Transport.active.OnServerConnected += OnTransportConnected;
+#pragma warning restore CS0618 // Type or member is obsolete
+            Transport.active.OnServerConnectedWithAddress += OnTransportConnectedWithAddress;
             Transport.active.OnServerDataReceived += OnTransportData;
             Transport.active.OnServerDisconnected += OnTransportDisconnected;
             Transport.active.OnServerError += OnTransportError;
@@ -263,7 +266,10 @@ namespace Mirror
         static void RemoveTransportHandlers()
         {
             // -= so that other systems can also hook into it (i.e. statistics)
+#pragma warning disable CS0618 // Type or member is obsolete
             Transport.active.OnServerConnected -= OnTransportConnected;
+#pragma warning restore CS0618 // Type or member is obsolete
+            Transport.active.OnServerConnectedWithAddress -= OnTransportConnectedWithAddress;
             Transport.active.OnServerDataReceived -= OnTransportData;
             Transport.active.OnServerDisconnected -= OnTransportDisconnected;
             Transport.active.OnServerError -= OnTransportError;
@@ -636,25 +642,39 @@ namespace Mirror
         // transport events ////////////////////////////////////////////////////
         // called by transport
         static void OnTransportConnected(int connectionId)
-        {
-            // Debug.Log($"Server accepted client:{connectionId}");
+            => OnTransportConnectedWithAddress(connectionId, Transport.active.ServerGetClientAddress(connectionId));
 
+        static void OnTransportConnectedWithAddress(int connectionId, string clientAddress)
+        {
+            if (IsConnectionAllowed(connectionId))
+            {
+                // create a connection
+                NetworkConnectionToClient conn = new NetworkConnectionToClient(connectionId, clientAddress);
+                OnConnected(conn);
+            }
+            else
+            {
+                // kick the client immediately
+                Transport.active.ServerDisconnect(connectionId);
+            }
+        }
+
+        static bool IsConnectionAllowed(int connectionId)
+        {
             // connectionId needs to be != 0 because 0 is reserved for local player
             // note that some transports like kcp generate connectionId by
             // hashing which can be < 0 as well, so we need to allow < 0!
             if (connectionId == 0)
             {
                 Debug.LogError($"Server.HandleConnect: invalid connectionId: {connectionId} . Needs to be != 0, because 0 is reserved for local player.");
-                Transport.active.ServerDisconnect(connectionId);
-                return;
+                return false;
             }
 
             // connectionId not in use yet?
             if (connections.ContainsKey(connectionId))
             {
-                Transport.active.ServerDisconnect(connectionId);
-                // Debug.Log($"Server connectionId {connectionId} already in use...kicked client");
-                return;
+                Debug.LogError($"Server connectionId {connectionId} already in use...client will be kicked");
+                return false;
             }
 
             // are more connections allowed? if not, kick
@@ -662,18 +682,13 @@ namespace Mirror
             //  less code and third party transport might not do that anyway)
             // (this way we could also send a custom 'tooFull' message later,
             //  Transport can't do that)
-            if (connections.Count < maxConnections)
+            if (connections.Count >= maxConnections)
             {
-                // add connection
-                NetworkConnectionToClient conn = new NetworkConnectionToClient(connectionId);
-                OnConnected(conn);
+                Debug.LogError($"Server full, client {connectionId} will be kicked");
+                return false;
             }
-            else
-            {
-                // kick
-                Transport.active.ServerDisconnect(connectionId);
-                // Debug.Log($"Server full, kicked client {connectionId}");
-            }
+
+            return true;
         }
 
         internal static void OnConnected(NetworkConnectionToClient conn)
@@ -1948,30 +1963,6 @@ namespace Mirror
                 // update connection to flush out batched messages
                 connection.Update();
             }
-
-            // TODO this is way too slow because we iterate ALL spawned :/
-            // TODO this is way too complicated :/
-            // to understand what this tries to prevent, consider this example:
-            //   monster has health=100
-            //   we change health=200, dirty bit is set
-            //   player comes in range, gets full serialization spawn packet.
-            //   next Broadcast(), player gets the health=200 change because dirty bit was set.
-            //
-            // this code clears all dirty bits if no players are around to prevent it.
-            // BUT there are two issues:
-            //   1. what if a playerB was around the whole time?
-            //   2. why don't we handle broadcast and spawn packets both HERE?
-            //      handling spawn separately is why we need this complex magic
-            //
-            // see test: DirtyBitsAreClearedForSpawnedWithoutObservers()
-            // see test: SyncObjectChanges_DontGrowWithoutObservers()
-            //
-            // PAUL: we also do this to avoid ever growing SyncList .changes
-            //ClearSpawnedDirtyBits();
-            //
-            // this was moved to NetworkIdentity.AddObserver!
-            // same result, but no more O(N) loop in here!
-            // TODO remove this comment after moving spawning into Broadcast()!
         }
 
         // update //////////////////////////////////////////////////////////////
@@ -2019,7 +2010,8 @@ namespace Mirror
                 // NetworkTransform, so they can sync on same interval as time
                 // snapshots _but_ not every single tick.
                 // Unity 2019 doesn't have Time.timeAsDouble yet
-                if (!Application.isPlaying || AccurateInterval.Elapsed(NetworkTime.localTime, sendInterval, ref lastSendTime))
+                bool sendIntervalElapsed = AccurateInterval.Elapsed(NetworkTime.localTime, sendInterval, ref lastSendTime);
+                if (!Application.isPlaying || sendIntervalElapsed)
                     Broadcast();
             }
 
